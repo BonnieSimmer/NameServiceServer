@@ -1,59 +1,40 @@
-package com.assignment;
+package com.assignment; 
 
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.Scanner;
+import java.util.concurrent.CopyOnWriteArrayList; // NEW IMPORT
 
 public class NameServiceApplication {
 
     private static final int PORT = 12345;
-    // Volatile ensures the boolean is synced across threads instantly
     private static volatile boolean isRunning = true; 
+    private static ServerSocket serverSocket; 
+    
+    // NEW: A thread-safe list to track all active client sockets
+    private static final CopyOnWriteArrayList<Socket> activeClients = new CopyOnWriteArrayList<>();
 
     public static void main(String[] args) {
         System.out.println("Starting Name Service Server on port " + PORT + "...");
-        
-        // Ensures the Singleton registry is initialized
         ServiceRegistry registry = ServiceRegistry.getInstance();
 
-        try (ServerSocket serverSocket = new ServerSocket(PORT)) {
+        try {
+            serverSocket = new ServerSocket(PORT);
             System.out.println("Server is active and listening for nodes...");
-            System.out.println("Type 'SHUTDOWN' in this terminal to stop the server.");
 
-            // 1. Create a background Admin Thread to listen for the shutdown command
-            Thread adminThread = new Thread(() -> {
-                Scanner scanner = new Scanner(System.in);
-                while (isRunning) {
-                    String input = scanner.nextLine();
-                    if ("SHUTDOWN".equalsIgnoreCase(input.trim()) || "EXIT".equalsIgnoreCase(input.trim())) {
-                        System.out.println("Shutdown command received. Closing server...");
-                        isRunning = false;
-                        try {
-                            // Closing the socket breaks the blocking accept() method below
-                            serverSocket.close(); 
-                        } catch (IOException e) {
-                            e.printStackTrace();
-                        }
-                        break;
-                    }
-                }
-            });
-            adminThread.start();
-
-            // 2. The main loop
             while (isRunning) {
                 try {
                     Socket clientSocket = serverSocket.accept();
                     System.out.println("Connection established with node: " + clientSocket.getInetAddress());
+
+                    // NEW: Add the connected client to our tracking list
+                    activeClients.add(clientSocket);
 
                     ClientHandler handler = new ClientHandler(clientSocket);
                     Thread clientThread = new Thread(handler);
                     clientThread.start();
                     
                 } catch (IOException e) {
-                    // When serverSocket.close() is called, accept() throws an exception.
-                    // If isRunning is false, we know it was an intentional shutdown.
                     if (!isRunning) {
                         System.out.println("Server socket successfully closed.");
                     } else {
@@ -68,5 +49,32 @@ public class NameServiceApplication {
         }
         
         System.out.println("Name Service Server has cleanly shut down.");
+    }
+
+    public static void shutdownServer() {
+        System.out.println("Remote shutdown initiated by an Admin node...");
+        isRunning = false;
+        try {
+            // 1. Stop accepting new clients
+            if (serverSocket != null && !serverSocket.isClosed()) {
+                serverSocket.close(); 
+            }
+            
+            // 2. Forcefully close all currently connected clients
+            for (Socket client : activeClients) {
+                if (client != null && !client.isClosed()) {
+                    client.close(); // This instantly interrupts their threads!
+                }
+            }
+            System.out.println("All active client connections have been severed.");
+            
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    // NEW: Method to clean up the list if a client disconnects normally (EXIT)
+    public static void removeClient(Socket clientSocket) {
+        activeClients.remove(clientSocket);
     }
 }
